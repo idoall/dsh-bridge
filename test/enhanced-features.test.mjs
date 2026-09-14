@@ -7,7 +7,7 @@ import { makeSessionsFile } from './helpers.mjs'
 
 test('ConversationBridge /rename command renames active session', async () => {
   const sentTexts = [];
-  const updatedRecords = [];
+  const renameCalls = [];
 
   const mockSession = {
     id: 'session-12345678',
@@ -18,11 +18,11 @@ test('ConversationBridge /rename command renames active session', async () => {
     on: () => () => {},
     effect: () => () => {},
     sessions: new Map([['session-12345678', mockSession]]),
-    sessionPersistence: {
-      update: async (id, data) => {
-        updatedRecords.push({ id, data });
-      },
-    },
+    // 真实 DSH 的会话标题服务：rename() 会追加 session/title 事件并落盘。
+    // 旧实现调用的是并不存在的 sessionPersistence.update()，被可选链静默跳过。
+    get: (name) => (name === 'sessionTitle'
+      ? { rename: (session, title) => { renameCalls.push({ id: session.id, title }) } }
+      : undefined),
   };
 
   const mockPlatform = {
@@ -48,17 +48,77 @@ test('ConversationBridge /rename command renames active session', async () => {
   await bridge.handleInbound({ senderId: 'user1', text: '/rename' });
   assert.match(sentTexts[0], /缺少新标题参数/);
 
-  // 2. 发送有效 /rename
+  // 2. 发送有效 /rename → 必须经 DSH 原生会话标题服务落盘
   await bridge.handleInbound({ senderId: 'user1', text: '/rename 优化登录交互' });
-  assert.equal(mockSession.title, '优化登录交互');
-  assert.equal(updatedRecords.length, 1);
-  assert.equal(updatedRecords[0].data.title, '优化登录交互');
+  assert.equal(renameCalls.length, 1);
+  assert.equal(renameCalls[0].id, 'session-12345678');
+  assert.equal(renameCalls[0].title, '优化登录交互');
   assert.match(sentTexts[1], /会话重命名成功/);
 
   // 3. 无活动会话时
   bridge.activeSessionId = null;
   await bridge.handleInbound({ senderId: 'user1', text: '/rename 另一个标题' });
   assert.match(sentTexts[2], /当前没有活动会话/);
+});
+
+// 回归：会话尚未恢复（宿主刚重启）时不得假报重命名成功
+test('ConversationBridge /rename 在会话未恢复时明确报错', async () => {
+  const sentTexts = [];
+  const mockCtx = {
+    on: () => () => {},
+    effect: () => () => {},
+    sessions: new Map(),
+    get: () => undefined,
+  };
+  const mockPlatform = {
+    id: 'test-platform',
+    capabilities: { maxMessageChars: 2000, supportsGroup: true },
+    sendText: async (peer, text) => { sentTexts.push(text); return { success: true }; },
+    sendTyping: async () => {},
+  };
+  const bridge = new ConversationBridge({
+    ctx: mockCtx,
+    logger: { info: () => {}, warn: () => {}, error: () => {} },
+    platform: mockPlatform,
+    config: { allowFrom: ['user1'] },
+  });
+  bridge.activeSessionId = 'session-cold';
+
+  await bridge.handleInbound({ senderId: 'user1', text: '/rename 冷会话标题' });
+
+  assert.match(sentTexts[0], /无法重命名/);
+  assert.doesNotMatch(sentTexts[0], /重命名成功/);
+});
+
+// 旧版 DSH（无 sessionTitle 服务）回退到内存标题 + 历史持久化接口
+test('ConversationBridge /rename 在旧版 DSH 上回退到内存标题', async () => {
+  const sentTexts = [];
+  const mockSession = { id: 'session-old', title: '旧标题' };
+  const mockCtx = {
+    on: () => () => {},
+    effect: () => () => {},
+    sessions: new Map([['session-old', mockSession]]),
+    sessionPersistence: { update: async () => {} },
+    get: () => undefined,
+  };
+  const mockPlatform = {
+    id: 'test-platform',
+    capabilities: { maxMessageChars: 2000, supportsGroup: true },
+    sendText: async (peer, text) => { sentTexts.push(text); return { success: true }; },
+    sendTyping: async () => {},
+  };
+  const bridge = new ConversationBridge({
+    ctx: mockCtx,
+    logger: { info: () => {}, warn: () => {}, error: () => {} },
+    platform: mockPlatform,
+    config: { allowFrom: ['user1'] },
+  });
+  bridge.activeSessionId = 'session-old';
+
+  await bridge.handleInbound({ senderId: 'user1', text: '/rename 回退标题' });
+
+  assert.equal(mockSession.title, '回退标题');
+  assert.match(sentTexts[0], /会话重命名成功/);
 });
 
 test('BridgeService getSystemMetrics returns valid metrics', async () => {

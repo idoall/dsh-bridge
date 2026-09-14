@@ -1091,6 +1091,8 @@ var BRIDGE_ENDPOINTS = {
   platformStop: "platformStop",
   platformStart: "platformStart",
   platformUnbind: "platformUnbind",
+  // 本机可用的 DSH agent preset（设置页下拉用；老版本 DSH 返回 available:false）
+  listAgentPresets: "listAgentPresets",
   // 微信 Bot（v1.x 向后兼容别名，deprecated）
   wechatGetStatus: "wechatGetStatus",
   wechatLogin: "wechatLogin",
@@ -2652,10 +2654,29 @@ function PlatformCard({ platformId, platformName, platformDesc, rpcCall }) {
         appSecret: "",
         domain: platform.config.domain ?? "feishu",
         botToken: "",
-        proxy: platform.config.proxy ?? ""
+        proxy: platform.config.proxy ?? "",
+        // 会话级配置：留空 = 使用 DSH 默认值
+        agentPreset: platform.config.agentPreset ?? "",
+        cwd: platform.config.cwd ?? "",
+        agentProvider: platform.config.agentProvider ?? "",
+        agentModel: platform.config.agentModel ?? ""
       });
     }
   }, [platform?.config, platformId]);
+  const [presetOptions, setPresetOptions] = React.useState(null);
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await rpcCall(BRIDGE_ENDPOINTS.listAgentPresets, {});
+        if (!cancelled && r?.ok) setPresetOptions(r.value ?? { available: false, presets: [] });
+      } catch {
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [rpcCall]);
   const loadInFlightRef = React.useRef(false);
   const seqRef = React.useRef(0);
   const load = React.useCallback(async (quiet = false) => {
@@ -2746,7 +2767,12 @@ function PlatformCard({ platformId, platformName, platformDesc, rpcCall }) {
       digestIntervalSec: num(cfgDraft.digestIntervalSec, platform?.config?.digestIntervalSec ?? 300),
       approvalTimeoutSec: num(cfgDraft.approvalTimeoutSec, platform?.config?.approvalTimeoutSec ?? 600),
       maxMessageChars: num(cfgDraft.maxMessageChars, platform?.config?.maxMessageChars ?? 2e3),
-      sendChunkDelayMs: num(cfgDraft.sendChunkDelayMs, platform?.config?.sendChunkDelayMs ?? 1500)
+      sendChunkDelayMs: num(cfgDraft.sendChunkDelayMs, platform?.config?.sendChunkDelayMs ?? 1500),
+      // 会话级配置：空串表示清除该设置、回落 DSH 默认值
+      agentPreset: (cfgDraft.agentPreset ?? "").trim(),
+      cwd: (cfgDraft.cwd ?? "").trim(),
+      agentProvider: (cfgDraft.agentProvider ?? "").trim(),
+      agentModel: (cfgDraft.agentModel ?? "").trim()
     };
     if (platformId === "qq") {
       payload.appId = cfgDraft.appId.trim();
@@ -2761,7 +2787,7 @@ function PlatformCard({ platformId, platformName, platformDesc, rpcCall }) {
     }
     await act(BRIDGE_ENDPOINTS.platformSetConfig, payload);
   }, [act, cfgDraft, platformId]);
-  const cfgDirty = cfgDraft && platform?.config && (Number(cfgDraft.digestIntervalSec) !== platform.config.digestIntervalSec || Number(cfgDraft.approvalTimeoutSec) !== platform.config.approvalTimeoutSec || Number(cfgDraft.maxMessageChars) !== platform.config.maxMessageChars || Number(cfgDraft.sendChunkDelayMs) !== platform.config.sendChunkDelayMs || platformId === "qq" && (cfgDraft.appId !== (platform.config.appId ?? "") || cfgDraft.clientSecret !== (platform.config.clientSecret ?? "")) || platformId === "feishu" && (cfgDraft.appId !== (platform.config.appId ?? "") || cfgDraft.appSecret !== (platform.config.appSecret ?? "")) || platformId === "telegram" && (cfgDraft.botToken !== "" || cfgDraft.proxy !== (platform.config.proxy ?? "")));
+  const cfgDirty = cfgDraft && platform?.config && (Number(cfgDraft.digestIntervalSec) !== platform.config.digestIntervalSec || Number(cfgDraft.approvalTimeoutSec) !== platform.config.approvalTimeoutSec || Number(cfgDraft.maxMessageChars) !== platform.config.maxMessageChars || Number(cfgDraft.sendChunkDelayMs) !== platform.config.sendChunkDelayMs || (cfgDraft.agentPreset ?? "") !== (platform.config.agentPreset ?? "") || (cfgDraft.cwd ?? "") !== (platform.config.cwd ?? "") || (cfgDraft.agentProvider ?? "") !== (platform.config.agentProvider ?? "") || (cfgDraft.agentModel ?? "") !== (platform.config.agentModel ?? "") || platformId === "qq" && (cfgDraft.appId !== (platform.config.appId ?? "") || cfgDraft.clientSecret !== (platform.config.clientSecret ?? "")) || platformId === "feishu" && (cfgDraft.appId !== (platform.config.appId ?? "") || cfgDraft.appSecret !== (platform.config.appSecret ?? "")) || platformId === "telegram" && (cfgDraft.botToken !== "" || cfgDraft.proxy !== (platform.config.proxy ?? "")));
   if (!platform && !err) {
     return React.createElement(
       "div",
@@ -3005,6 +3031,121 @@ function PlatformCard({ platformId, platformName, platformDesc, rpcCall }) {
           }
         }),
         React.createElement("span", null, "\u7FA4\u804A\u81EA\u52A8\u6388\u6743\uFF08\u65B0\u7FA4\u9996\u6B21 @\u673A\u5668\u4EBA \u81EA\u52A8\u52A0\u5165\u767D\u540D\u5355\uFF0C\u9ED8\u8BA4\u5173\u95ED\uFF09")
+      ),
+      // 高级设置：会话级配置（工作区 / Agent 预设 / 模型路由）+ 会话节奏参数
+      React.createElement(
+        "div",
+        { style: { marginTop: 12 } },
+        React.createElement("button", {
+          style: s.btnGhost,
+          onClick: () => setShowAdvanced((v) => !v)
+        }, showAdvanced ? "\u6536\u8D77\u9AD8\u7EA7\u8BBE\u7F6E" : "\u2699\uFE0F \u9AD8\u7EA7\u8BBE\u7F6E"),
+        showAdvanced && React.createElement(
+          "div",
+          { style: { ...s.block, marginTop: 8, display: "flex", flexDirection: "column", gap: 10 } },
+          React.createElement(
+            "div",
+            { style: { ...s.muted, fontSize: 12, lineHeight: 1.6 } },
+            "\u4EE5\u4E0B\u8BBE\u7F6E\u6309\u5E73\u53F0\u4FDD\u5B58\uFF0C\u53EA\u5F71\u54CD\u8BE5\u5E73\u53F0\u901A\u8FC7 Bot \u65B0\u5EFA\u7684\u4F1A\u8BDD\uFF08\u7559\u7A7A = \u4F7F\u7528 DSH \u9ED8\u8BA4\u503C\uFF09\u3002"
+          ),
+          // Agent 预设：决定远程会话挂载哪些工具/技能
+          React.createElement(
+            "div",
+            null,
+            React.createElement("div", { style: { ...s.muted, marginBottom: 4 } }, "Agent \u9884\u8BBE \u2014 \u51B3\u5B9A\u8FDC\u7A0B\u4F1A\u8BDD\u53EF\u7528\u7684\u5DE5\u5177\u4E0E\u6280\u80FD\uFF0C\u7559\u7A7A\u7528 DSH \u9ED8\u8BA4\u9884\u8BBE"),
+            React.createElement("input", {
+              style: { ...s.input, width: "100%" },
+              list: "dsh-bridge-agent-presets",
+              placeholder: presetOptions?.default ? `\u7559\u7A7A = DSH \u9ED8\u8BA4\uFF08${presetOptions.default}\uFF09` : "\u7559\u7A7A = DSH \u9ED8\u8BA4\u9884\u8BBE",
+              value: cfgDraft?.agentPreset ?? "",
+              onChange: (e) => setCfgDraft((d) => ({ ...d, agentPreset: e.target.value }))
+            }),
+            React.createElement(
+              "datalist",
+              { id: "dsh-bridge-agent-presets" },
+              (presetOptions?.presets ?? []).map((p) => React.createElement("option", { key: p.id, value: p.id }, p.name && p.name !== p.id ? p.name : null))
+            ),
+            React.createElement(
+              "div",
+              { style: { ...s.muted, fontSize: 11, marginTop: 4 } },
+              presetOptions == null ? "\u6B63\u5728\u8BFB\u53D6\u672C\u673A\u53EF\u7528\u9884\u8BBE\u2026" : presetOptions.available ? `\u672C\u673A\u53EF\u7528\uFF1A${(presetOptions.presets ?? []).map((p) => p.id).join(" / ") || "\uFF08\u65E0\uFF09"}` : "\u5F53\u524D DSH \u7248\u672C\u672A\u63D0\u4F9B\u9884\u8BBE\u5217\u8868\uFF0C\u8BF7\u624B\u52A8\u586B\u5199\u9884\u8BBE\u540D"
+            )
+          ),
+          // 工作区
+          React.createElement(
+            "div",
+            null,
+            React.createElement("div", { style: { ...s.muted, marginBottom: 4 } }, "\u5DE5\u4F5C\u533A\u76EE\u5F55 \u2014 \u8BE5\u5E73\u53F0 /new \u65B0\u5EFA\u4F1A\u8BDD\u7684\u9ED8\u8BA4\u76EE\u5F55\uFF0C\u7559\u7A7A\u7528\u9996\u4E2A\u5DF2\u6CE8\u518C\u5DE5\u4F5C\u533A"),
+            React.createElement("input", {
+              style: { ...s.input, width: "100%" },
+              placeholder: "\u7EDD\u5BF9\u8DEF\u5F84\uFF0C\u4F8B\u5982 /home/me/project \u6216 D:\\project",
+              value: cfgDraft?.cwd ?? "",
+              onChange: (e) => setCfgDraft((d) => ({ ...d, cwd: e.target.value }))
+            })
+          ),
+          // 模型路由
+          React.createElement(
+            "div",
+            { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8 } },
+            React.createElement(
+              "div",
+              null,
+              React.createElement("div", { style: { ...s.muted, marginBottom: 4 } }, "\u6A21\u578B\u63D0\u4F9B\u65B9\uFF08\u53EF\u9009\uFF09"),
+              React.createElement("input", {
+                style: { ...s.input, width: "100%" },
+                placeholder: "\u7559\u7A7A = DSH \u9ED8\u8BA4",
+                value: cfgDraft?.agentProvider ?? "",
+                onChange: (e) => setCfgDraft((d) => ({ ...d, agentProvider: e.target.value }))
+              })
+            ),
+            React.createElement(
+              "div",
+              null,
+              React.createElement("div", { style: { ...s.muted, marginBottom: 4 } }, "\u6A21\u578B\uFF08\u53EF\u9009\uFF09"),
+              React.createElement("input", {
+                style: { ...s.input, width: "100%" },
+                placeholder: "\u7559\u7A7A = DSH \u9ED8\u8BA4",
+                value: cfgDraft?.agentModel ?? "",
+                onChange: (e) => setCfgDraft((d) => ({ ...d, agentModel: e.target.value }))
+              })
+            )
+          ),
+          // 会话节奏参数
+          React.createElement(
+            "div",
+            { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8 } },
+            [
+              ["digestIntervalSec", "\u8FDB\u5EA6\u6458\u8981\u95F4\u9694\uFF08\u79D2\uFF09"],
+              ["approvalTimeoutSec", "\u5BA1\u6279\u8D85\u65F6\uFF08\u79D2\uFF09"],
+              ["maxMessageChars", "\u5355\u6761\u6D88\u606F\u4E0A\u9650\uFF08\u5B57\u7B26\uFF09"],
+              ["sendChunkDelayMs", "\u5206\u5757\u53D1\u9001\u95F4\u9694\uFF08\u6BEB\u79D2\uFF09"]
+            ].map(([key, label]) => React.createElement(
+              "div",
+              { key },
+              React.createElement("div", { style: { ...s.muted, marginBottom: 4 } }, label),
+              React.createElement("input", {
+                style: { ...s.input, width: "100%" },
+                inputMode: "numeric",
+                value: cfgDraft?.[key] ?? "",
+                onChange: (e) => setCfgDraft((d) => ({ ...d, [key]: e.target.value }))
+              })
+            ))
+          ),
+          React.createElement(
+            "div",
+            { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } },
+            React.createElement("button", {
+              style: { ...s.btnPri, opacity: busy || !cfgDirty ? 0.5 : 1 },
+              onClick: saveConfig,
+              disabled: busy || !cfgDirty
+            }, busy ? "\u4FDD\u5B58\u4E2D\u2026" : "\u4FDD\u5B58\u9AD8\u7EA7\u8BBE\u7F6E"),
+            React.createElement("button", {
+              style: { ...s.btnGhost },
+              onClick: resetDefaults,
+              disabled: busy
+            }, "\u6062\u590D\u63A8\u8350\u8282\u594F\u53C2\u6570")
+          )
+        )
       ),
       // 飞书 / Telegram 扫码直达对话引导卡片
       (platformId === "feishu" || platformId === "telegram") && platform.botQr && React.createElement(

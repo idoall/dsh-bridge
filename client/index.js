@@ -1396,9 +1396,27 @@ function PlatformCard({ platformId, platformName, platformDesc, rpcCall }) {
         domain: platform.config.domain ?? 'feishu',
         botToken: '',
         proxy: platform.config.proxy ?? '',
+        // 会话级配置：留空 = 使用 DSH 默认值
+        agentPreset: platform.config.agentPreset ?? '',
+        cwd: platform.config.cwd ?? '',
+        agentProvider: platform.config.agentProvider ?? '',
+        agentModel: platform.config.agentModel ?? '',
       });
     }
   }, [platform?.config, platformId]);
+
+  // 本机可用的 DSH agent preset（旧版本 DSH 返回 available:false → 退化为手填）
+  const [presetOptions, setPresetOptions] = React.useState(null);
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await rpcCall(BRIDGE_ENDPOINTS.listAgentPresets, {});
+        if (!cancelled && r?.ok) setPresetOptions(r.value ?? { available: false, presets: [] });
+      } catch { /* 读取失败保持手填 */ }
+    })();
+    return () => { cancelled = true; };
+  }, [rpcCall]);
 
   const loadInFlightRef = React.useRef(false);
   const seqRef = React.useRef(0);
@@ -1507,6 +1525,11 @@ function PlatformCard({ platformId, platformName, platformDesc, rpcCall }) {
       approvalTimeoutSec: num(cfgDraft.approvalTimeoutSec, platform?.config?.approvalTimeoutSec ?? 600),
       maxMessageChars:    num(cfgDraft.maxMessageChars,    platform?.config?.maxMessageChars    ?? 2000),
       sendChunkDelayMs:   num(cfgDraft.sendChunkDelayMs,   platform?.config?.sendChunkDelayMs   ?? 1500),
+      // 会话级配置：空串表示清除该设置、回落 DSH 默认值
+      agentPreset:   (cfgDraft.agentPreset ?? '').trim(),
+      cwd:           (cfgDraft.cwd ?? '').trim(),
+      agentProvider: (cfgDraft.agentProvider ?? '').trim(),
+      agentModel:    (cfgDraft.agentModel ?? '').trim(),
     };
     // QQ / 飞书 / Telegram 平台额外携带凭证
     if (platformId === 'qq') {
@@ -1527,6 +1550,10 @@ function PlatformCard({ platformId, platformName, platformDesc, rpcCall }) {
     Number(cfgDraft.approvalTimeoutSec) !== platform.config.approvalTimeoutSec ||
     Number(cfgDraft.maxMessageChars)    !== platform.config.maxMessageChars    ||
     Number(cfgDraft.sendChunkDelayMs)   !== platform.config.sendChunkDelayMs   ||
+    (cfgDraft.agentPreset ?? '')   !== (platform.config.agentPreset ?? '')     ||
+    (cfgDraft.cwd ?? '')           !== (platform.config.cwd ?? '')             ||
+    (cfgDraft.agentProvider ?? '') !== (platform.config.agentProvider ?? '')   ||
+    (cfgDraft.agentModel ?? '')    !== (platform.config.agentModel ?? '')      ||
     (platformId === 'qq' && (
       cfgDraft.appId !== (platform.config.appId ?? '') ||
       cfgDraft.clientSecret !== (platform.config.clientSecret ?? '')
@@ -1746,6 +1773,99 @@ function PlatformCard({ platformId, platformName, platformDesc, rpcCall }) {
           },
         }),
         React.createElement('span', null, '群聊自动授权（新群首次 @机器人 自动加入白名单，默认关闭）'),
+      ),
+      // 高级设置：会话级配置（工作区 / Agent 预设 / 模型路由）+ 会话节奏参数
+      React.createElement('div', { style: { marginTop: 12 } },
+        React.createElement('button', {
+          style: s.btnGhost,
+          onClick: () => setShowAdvanced(v => !v),
+        }, showAdvanced ? '收起高级设置' : '⚙️ 高级设置'),
+        showAdvanced && React.createElement('div', { style: { ...s.block, marginTop: 8, display: 'flex', flexDirection: 'column', gap: 10 } },
+          React.createElement('div', { style: { ...s.muted, fontSize: 12, lineHeight: 1.6 } },
+            '以下设置按平台保存，只影响该平台通过 Bot 新建的会话（留空 = 使用 DSH 默认值）。'),
+          // Agent 预设：决定远程会话挂载哪些工具/技能
+          React.createElement('div', null,
+            React.createElement('div', { style: { ...s.muted, marginBottom: 4 } }, 'Agent 预设 — 决定远程会话可用的工具与技能，留空用 DSH 默认预设'),
+            React.createElement('input', {
+              style: { ...s.input, width: '100%' },
+              list: 'dsh-bridge-agent-presets',
+              placeholder: presetOptions?.default ? `留空 = DSH 默认（${presetOptions.default}）` : '留空 = DSH 默认预设',
+              value: cfgDraft?.agentPreset ?? '',
+              onChange: (e) => setCfgDraft(d => ({ ...d, agentPreset: e.target.value })),
+            }),
+            React.createElement('datalist', { id: 'dsh-bridge-agent-presets' },
+              (presetOptions?.presets ?? []).map((p) =>
+                React.createElement('option', { key: p.id, value: p.id }, p.name && p.name !== p.id ? p.name : null)),
+            ),
+            React.createElement('div', { style: { ...s.muted, fontSize: 11, marginTop: 4 } },
+              presetOptions == null
+                ? '正在读取本机可用预设…'
+                : presetOptions.available
+                  ? `本机可用：${(presetOptions.presets ?? []).map((p) => p.id).join(' / ') || '（无）'}`
+                  : '当前 DSH 版本未提供预设列表，请手动填写预设名'),
+          ),
+          // 工作区
+          React.createElement('div', null,
+            React.createElement('div', { style: { ...s.muted, marginBottom: 4 } }, '工作区目录 — 该平台 /new 新建会话的默认目录，留空用首个已注册工作区'),
+            React.createElement('input', {
+              style: { ...s.input, width: '100%' },
+              placeholder: '绝对路径，例如 /home/me/project 或 D:\\project',
+              value: cfgDraft?.cwd ?? '',
+              onChange: (e) => setCfgDraft(d => ({ ...d, cwd: e.target.value })),
+            }),
+          ),
+          // 模型路由
+          React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8 } },
+            React.createElement('div', null,
+              React.createElement('div', { style: { ...s.muted, marginBottom: 4 } }, '模型提供方（可选）'),
+              React.createElement('input', {
+                style: { ...s.input, width: '100%' },
+                placeholder: '留空 = DSH 默认',
+                value: cfgDraft?.agentProvider ?? '',
+                onChange: (e) => setCfgDraft(d => ({ ...d, agentProvider: e.target.value })),
+              }),
+            ),
+            React.createElement('div', null,
+              React.createElement('div', { style: { ...s.muted, marginBottom: 4 } }, '模型（可选）'),
+              React.createElement('input', {
+                style: { ...s.input, width: '100%' },
+                placeholder: '留空 = DSH 默认',
+                value: cfgDraft?.agentModel ?? '',
+                onChange: (e) => setCfgDraft(d => ({ ...d, agentModel: e.target.value })),
+              }),
+            ),
+          ),
+          // 会话节奏参数
+          React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 } },
+            [
+              ['digestIntervalSec', '进度摘要间隔（秒）'],
+              ['approvalTimeoutSec', '审批超时（秒）'],
+              ['maxMessageChars', '单条消息上限（字符）'],
+              ['sendChunkDelayMs', '分块发送间隔（毫秒）'],
+            ].map(([key, label]) =>
+              React.createElement('div', { key },
+                React.createElement('div', { style: { ...s.muted, marginBottom: 4 } }, label),
+                React.createElement('input', {
+                  style: { ...s.input, width: '100%' },
+                  inputMode: 'numeric',
+                  value: cfgDraft?.[key] ?? '',
+                  onChange: (e) => setCfgDraft(d => ({ ...d, [key]: e.target.value })),
+                }),
+              )),
+          ),
+          React.createElement('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+            React.createElement('button', {
+              style: { ...s.btnPri, opacity: (busy || !cfgDirty) ? 0.5 : 1 },
+              onClick: saveConfig,
+              disabled: busy || !cfgDirty,
+            }, busy ? '保存中…' : '保存高级设置'),
+            React.createElement('button', {
+              style: { ...s.btnGhost },
+              onClick: resetDefaults,
+              disabled: busy,
+            }, '恢复推荐节奏参数'),
+          ),
+        ),
       ),
       // 飞书 / Telegram 扫码直达对话引导卡片
       (platformId === 'feishu' || platformId === 'telegram') && platform.botQr && React.createElement('div', {
