@@ -30,7 +30,7 @@ const SYSTEM_CGROUP = '0::/system.slice/dsh.service';
  * @param {object} [opts]
  * @param {number[]} [opts.errorCalls] 需要以 'error' 结束的调用序号（从 0 起）
  */
-function makeFakeSpawn({ errorCalls = [] } = {}) {
+function makeFakeSpawn({ errorCalls = [], closeCodes = {} } = {}) {
   const calls = [];
   const impl = (command, args, options) => {
     const index = calls.length;
@@ -39,7 +39,15 @@ function makeFakeSpawn({ errorCalls = [] } = {}) {
     child.pid = 4242;
     child.unref = () => {};
     const shouldError = errorCalls.includes(index);
-    queueMicrotask(() => child.emit(shouldError ? 'error' : 'spawn', shouldError ? new Error(`spawn ${command} ENOENT`) : undefined));
+    const code = closeCodes[index] ?? 0;
+    queueMicrotask(() => {
+      if (shouldError) {
+        child.emit('error', new Error(`spawn ${command} ENOENT`));
+        return;
+      }
+      child.emit('spawn');
+      child.emit('close', code); // 真实子进程（含 systemctl）都会 close
+    });
     return child;
   };
   return { impl, calls };
@@ -58,6 +66,10 @@ test('parseSystemdUnit 取最内层单元（不能被祖先的 user@1000.service
   assert.equal(parseSystemdUnit(SYSTEM_CGROUP), 'dsh.service');
   assert.equal(parseSystemdUnit('0::/'), '');
   assert.equal(parseSystemdUnit(''), '');
+  // 最内层不是 .service（容器目录 / scope）→ 判空，绝不能向上游取祖先单元
+  assert.equal(parseSystemdUnit('0::/system.slice/docker.service/docker/abc123'), '');
+  assert.equal(parseSystemdUnit('0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-abc.scope'), '');
+  assert.equal(parseSystemdUnit('0::/kubepods.slice/kubepods-burstable.slice/cri-containerd-abc.scope'), '');
 });
 
 test('detectSupervisor 正确识别 systemd(用户/系统)、守护进程与无托管器', () => {
@@ -110,22 +122,39 @@ test('system 单元：不带 --user', async () => {
   assert.deepEqual(calls[0].args, ['restart', '--no-block', 'dsh.service']);
 });
 
-test('systemctl 调用失败：回退到独立重启助手（而不是静默退出）', async () => {
+test('systemctl 非 0 退出：ok:false、进程不退出、也绝不退化自派生（R-D/R-E 回归）', async () => {
   const service = makeService();
-  const { impl, calls } = makeFakeSpawn({ errorCalls: [0] });
+  const { impl, calls } = makeFakeSpawn({ closeCodes: { 0: 5 } }); // 单元不存在 → rc=5
+  const exits = [];
   const result = await service.restartDsh({
     env: { INVOCATION_ID: 'abc' },
     cgroup: USER_CGROUP,
     spawnImpl: impl,
-    scheduleExit: () => {},
+    scheduleExit: (ms) => exits.push(ms),
   });
 
-  assert.equal(calls.length, 2, 'systemctl 失败后应再派生助手');
-  assert.equal(calls[0].command, 'systemctl');
-  assert.equal(calls[1].command, process.execPath);
-  assert.match(String(calls[1].args[0]), /restart-helper\.mjs$/);
-  assert.equal(result.ok, true);
-  assert.match(result.message, /助手|restart\.log/);
+  assert.equal(calls.length, 1, 'systemd 下失败不得退化为自派生（KillMode=control-group 会连助手一起杀）');
+  assert.equal(result.ok, false, '必须如实报失败');
+  assert.match(result.error, /退出码 5/);
+  assert.match(result.error, /DSH 仍在运行/, '必须说明没有做破坏性退出');
+  assert.deepEqual(exits, [], '不得安排退出（否则干净退出不会被 systemd 拉起）');
+});
+
+test('systemctl 派生失败（error 事件）：同样 ok:false 且不退出、不退化', async () => {
+  const service = makeService();
+  const { impl, calls } = makeFakeSpawn({ errorCalls: [0] });
+  const exits = [];
+  const result = await service.restartDsh({
+    env: { INVOCATION_ID: 'abc' },
+    cgroup: USER_CGROUP,
+    spawnImpl: impl,
+    scheduleExit: (ms) => exits.push(ms),
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /ENOENT|失败/);
+  assert.deepEqual(exits, []);
 });
 
 test('无托管器：派生独立助手，payload 带旧 pid 与端口', async () => {

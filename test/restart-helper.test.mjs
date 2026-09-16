@@ -90,6 +90,33 @@ test('重启助手：等旧进程退出与端口释放后才拉起新进程，�
   }
 });
 
+test('重启助手：新进程派生失败（execPath 不存在）→ rc=4 且日志写明原因（R-C 回归）', async () => {
+  const port = await pickFreePort();
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-restart-helper-err-'));
+  const logFile = join(dir, 'restart.log');
+  const childLog = join(dir, 'restart-child.log');
+
+  const payload = JSON.stringify({
+    pid: 999_999_999,            // 不存在的 pid → 直接进入"等端口释放"（端口本来就空闲）
+    port,
+    argv: ['-e', '/* 不会被执行 */'],
+    cwd: process.cwd(),
+    execPath: join(dir, 'definitely-not-a-real-node-binary'),
+    logFile,
+    childLog,
+    waitTimeoutMs: 1500,
+    readyTimeoutMs: 1500,
+  });
+  const helper = spawn(process.execPath, [HELPER, payload], { stdio: 'ignore' });
+  const exitCode = await new Promise((resolve) => helper.once('exit', resolve));
+  const log = existsSync(logFile) ? readFileSync(logFile, 'utf8') : '';
+
+  assert.equal(exitCode, 4, `派生失败应以 4 退出，实际 ${exitCode}\n日志:\n${log}`);
+  assert.match(log, /派生新 dsh 失败/, '日志必须写明派生失败');
+  assert.match(log, /ENOENT|no such file/i, '日志必须带可诊断原因（不能只留"已派生 pid=(未知)"）');
+  assert.doesNotMatch(log, /已派生新 dsh/, '确认成功前不得写"已派生"');
+});
+
 test('重启助手：端口一直被占用时放弃重启（不盲目拉起第二个实例）', async () => {
   const port = await pickFreePort();
   const dir = mkdtempSync(join(tmpdir(), 'dsh-restart-helper-blocked-'));

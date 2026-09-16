@@ -4,15 +4,16 @@
 
 ---
 
-## [v2.10.11] - 2026-09-16
+## [v2.10.12] - 2026-09-16
+
+> v2.10.11 未正式发布到 npm，其内容已并入本版。
 
 ### 🐞 修复
 
-- **移动端顶栏压住 `position: fixed` 全屏面板顶部 52px**（issue #41）：桥的让位方式此前是给内容框架加 `padding-top: var(--dsh-mobile-header-h)`，但 `position: fixed` 元素的包含块是视口（CSS 2.1 §10.1），不跟随祖先内边距。官方右侧栏在窄视口（`viewportWidth < 768`）自动全屏（`.P3OORG_panel[data-sidebar-right-panel=fullscreen]`，即 `fixed; inset:0; z-index:40`），其顶部标签栏因此落进顶栏（`z-index: 9998`）覆盖区。由于顶栏背景透明且容器自身 `pointer-events: none`，实际表现并非「被不透明条挡住」，而是顶栏标题/图标与面板标签压字，外加两处 40×40 命中区抢占点击——面板右端的「全屏 / 收起」按钮右半（14×28px）会被顶栏「+」按钮夺走，误触即触发新建会话。现按 `data-sidebar-right-panel="fullscreen"` 直接位移面板容器本身（`top` 下移 52px 并同步收窄 `height` / `max-height`），不依赖宿主 CSS-module 哈希类名，宿主升级不失效。若用户此前用 `top` 自行让位过，本次修复与之同属性、级联只生效一条，**不会叠加**；但若用的是 `padding-top` / `margin-top` / `transform` 位移，请撤掉旧规则，否则会叠加下移。
-- **移动端断点与宿主判据对齐**：桥原按 `max-width: 768px`（运行时亦为 `innerWidth <= 768`），而宿主用 `viewportWidth < 768` 决定右侧栏是否自动全屏，恰在 768px 这一宽度上出现「桥渲染移动端顶栏、宿主按桌面（push）布局」的错位。现移动端统一为 `<= 767px`（新增 `MOBILE_MAX_WIDTH = 767` 常量，消除散落的魔法值），`768px` 起彻底交还桌面布局。
-- **鸿蒙（HuaweiBrowser / ArkWeb）上文档预览永远显示「文件资源服务不可用。」**：该内核解析非特殊 scheme 时 `new URL('dsh-resource://file/session/<id>/<path>').hostname` 返回空串（Chrome/Safari 返回 `file`），而 DSH 的客户端资源注册表 `@deepseek-ai/dsh-client-resources` 正是拿 URL 的 hostname 当「协议键」——取不到就把记录判成「没有 provider」，状态永久停在 `none`；注册表只在 provider 注册那一刻回挂一次已有记录，之后不再重试，所以刷新也不恢复。表现为右侧栏文件与对话生成文档的预览全部打不开（而日志/探针里 `resources.providers` 其实一直有 `file`，容易误判成插件没生效）。现桥侧新增 `client/resource-url-compat.js`：**先做特性探测**，只有引擎确有差异时才包一层 `window.URL`，且仅对 `dsh-resource:` 协议、原生 hostname 为空、原始串能解析出 host 的实例补上 `hostname`/`host`（写成实例自有访问器，读取时原生值优先、为空才回退现解析，赋值/改 href 后立即反映新值；setter 仍委托原生原型）；引擎正常时一个字节都不动（判定 `not-needed`）。根因在宿主侧（用 URL.hostname 当协议键），已另行整理上游材料；上游若改为从原始串解析协议，本兼容层自动空转。
-- **iOS 16 / 旧 Safari 完全打不开 DSH（页面红屏 `Failed to load plugins … Can't find variable: Iterator`）**：DSH 自带的 pdf.js 在**模块顶层**就执行 `if (typeof Iterator.prototype.join !== 'function') Iterator.prototype.join = …`，而 `Iterator` 这个全局是 Safari 18.4 才随「迭代器辅助方法」引入的——iOS 16 上该引用直接抛 `Can't find variable: Iterator`，导致 `@deepseek-ai/dsh-client-ui-sidebar-documentpreview` 导入失败，进而整棵客户端插件树加载失败（实测于 iOS 16 真机，并在本机以同构环境复现）。同一批缺口还有 `Promise.withResolvers`（Safari 17.4+）：DSH 宿主 HTML 末尾的启动握手内联脚本、以及审批 / 用户提问 / cordis 运行时 `ctx.timeout`·`ctx.interval` / workspace-files 变更订阅等运行期路径都在用它。现桥在反向代理注入 HTML 时、于宿主所有脚本之前补齐两枚垫片：`Promise.withResolvers`（完整语义）与 `Iterator`（把真实的内置迭代器共享原型 `%IteratorPrototype%` 挂到 `Iterator.prototype`，使 pdf.js 的补丁落到真实迭代器原型而不是一个没用的空对象）。两者都**只在缺失时安装**，iOS 18.4+ / Android / 桌面端零改动；至此 iOS 16 可正常启动并使用。
-- **「重启 DSH」按钮在 systemd 托管下点了没用，DSH 再也没起来（只能手动重启），且不留任何日志**：桥原实现是不识别托管器的「自派生子进程 + `process.exit(0)`」。在 systemd 单元（如 `dsh-web.service`，用户在 user slice 下）里这必然失败：`Restart=on-failure` 不认干净退出的 code 0（systemd 不会拉起），而默认 `KillMode=control-group` 会在主进程退出时把刚派生的子进程一并杀掉；旧实现还把子进程 stdio 设成 `ignore`，所以连失败原因都看不到。现按托管方式分流：从 `/proc/self/cgroup` 取出**最内层** systemd 单元名 → 交给 `systemctl [--user] restart --no-block <unit>`（stop+start 由 systemd 负责，新进程仍在正确 cgroup 内，并尊重单元自身的 Restart 策略）；`DSH_DAEMON` / `PM2_HOME` 仍走守护进程退出；无托管器时派生独立助手 `lib/restart-helper.mjs`，**等旧进程真正退出、端口释放后**才拉起新 DSH，并在最长 120s 内确认端口可连接，全过程写入 `~/.dsh/dsh-bridge/restart.log`（子进程输出另存 `restart-child.log`）。前端在宿主明确返回 `ok:false`（例如 `systemctl` 与助手都派生失败）时**直接报错**，不再假装「正在重连」让用户面对永远转圈。注意：systemd 托管的环境需先手动重启一次让本修复生效，之后按钮即可正常使用。
+- **iOS 16 / 旧 Safari 打不开 DSH**（红屏 `Failed to load plugins … Can't find variable: Iterator`）：代理注入 HTML 时补齐 `Promise.withResolvers` 与 `Iterator` 垫片（Safari 分别是 17.4 / 18.4 才有），只在缺失时安装，其它浏览器零改动。
+- **鸿蒙（HuaweiBrowser / ArkWeb）文档预览一直显示「文件资源服务不可用。」**：该内核解析 `dsh-resource://` 地址取不到 hostname，新增 URL 兼容层兜底；引擎正常时不介入。
+- **移动端顶栏压住全屏面板顶部 52px（#41）**：改为直接位移面板容器本身，并让移动端断点与宿主判据对齐（`≤767px`）。
+- **「重启 DSH」在 systemd 托管下点了没用、DSH 不再自动起来**：改为识别 systemd 单元并交给 `systemctl restart`，按退出码判定成败；失败时保持运行并提示手动重启命令。
 
 ---
 
