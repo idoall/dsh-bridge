@@ -51,7 +51,10 @@ var MOBILE_STYLES_CSS = `
       --dsh-mobile-safe-bottom: env(safe-area-inset-bottom, 0px);
     }
 
-    @media (max-width: 768px) {
+    /* \u65AD\u70B9\u4E0E\u5BBF\u4E3B\u5224\u636E\u5BF9\u9F50\uFF1A\u5BBF\u4E3B\u7528 viewportWidth < 768 \u51B3\u5B9A\u53F3\u4FA7\u680F\u81EA\u52A8\u5168\u5C4F
+       \uFF08dsh-client-ui-sidebar-right/lib/client.js\uFF09\uFF0C\u6545\u79FB\u52A8\u7AEF\u6837\u5F0F\u53D6 <=767px\uFF0C
+       768px \u8D77\u5F7B\u5E95\u4EA4\u8FD8\u684C\u9762\u5E03\u5C40\uFF0C\u907F\u514D"\u6865\u6E32\u67D3\u9876\u680F\u3001\u5BBF\u4E3B\u5374\u672A\u5168\u5C4F"\u7684\u9519\u4F4D\u3002 */
+    @media (max-width: 767px) {
       /* 1. \u4E3B\u6846\u67B6\u4E3A Header \u817E\u51FA\u9876\u90E8\u7A7A\u95F4 */
       div[class*="_frame"] {
         display: flex !important;
@@ -64,6 +67,19 @@ var MOBILE_STYLES_CSS = `
         grid-template-columns: 1fr !important;
         overflow: hidden !important;
         box-sizing: border-box !important;
+      }
+
+      /* 1.1 fixed \u5168\u5C4F\u9762\u677F\u5355\u72EC\u8BA9\u4F4D\uFF1Aposition:fixed \u7684\u5305\u542B\u5757\u662F viewport\uFF08CSS 2.1 \xA710.1\uFF09\uFF0C
+         \u4E0D\u8DDF\u968F\u4E0A\u9762 frame \u7684 padding-top\uFF0C\u56E0\u6B64\u9876\u90E8 52px \u4F1A\u843D\u8FDB\u9876\u680F\u8986\u76D6\u533A\uFF08#41\uFF09\u3002
+         \u5B98\u65B9\u53F3\u4FA7\u680F\u5728 <768px \u81EA\u52A8\u5168\u5C4F\uFF08fixed; inset:0; z-index:40\uFF09\uFF0C\u8FD9\u91CC\u6309 data \u5C5E\u6027
+         \u76F4\u63A5\u4F4D\u79FB\u5BB9\u5668\u672C\u8EAB\uFF0C\u4E0D\u4F9D\u8D56\u5BBF\u4E3B CSS-module \u54C8\u5E0C\u7C7B\u540D\u3002
+         \u771F\u6B63\u8D77\u4F5C\u7528\u7684\u662F top\uFF1Bheight/max-height \u4E0E\u4E0B\u9762\u5DE5\u4F5C\u53F0\u9762\u677F\u90A3\u6BB5\u4FDD\u6301\u540C\u4E00\u5199\u6CD5\uFF1A
+         \u5BBF\u4E3B\u5F53\u524D\u7528 inset:0\uFF08\u65E0\u663E\u5F0F\u9AD8\u5EA6\uFF09\u65F6 top \u5355\u72EC\u5373\u53EF\uFF0C\u4F46\u5BBF\u4E3B\u5C06\u6765\u82E5\u7ED9\u51FA\u663E\u5F0F\u9AD8\u5EA6\uFF0C
+         \u663E\u5F0F height \u4ECD\u80FD\u628A\u76D2\u5B50\u6536\u5728\u9876\u680F\u4E4B\u4E0B\u3002 */
+      [data-sidebar-right-panel="fullscreen"] {
+        top: var(--dsh-mobile-header-h, 52px) !important;
+        height: calc(100dvh - var(--dsh-mobile-header-h, 52px)) !important;
+        max-height: calc(100dvh - var(--dsh-mobile-header-h, 52px)) !important;
       }
 
       /* 2. \u9876\u90E8\u539F\u751F\u5BFC\u822A\u6761\uFF1A100% \u8FD8\u539F DeepSeek App (\u5DE6\u4FA7\u53CC\u6A2A\u7EBF\uFF0C\u53F3\u4FA7(+)\uFF0C\u4E2D\u95F4\u7559\u767D\uFF0C\u65E0\u591A\u4F59\u8BBE\u7F6E\u6309\u94AE) */
@@ -923,7 +939,7 @@ var MOBILE_STYLES_CSS = `
       --dsw-alias-label-primary-foreground: #0f1115;
     }
 
-    @media (min-width: 769px) {
+    @media (min-width: 768px) {
       .dsh-mobile-app-header,
       .dsh-mobile-backdrop,
       .dsh-mobile-panel-close-btn {
@@ -1103,6 +1119,81 @@ var BRIDGE_ENDPOINTS = {
   wechatUnbind: "wechatUnbind"
 };
 
+// client/resource-url-compat.js
+function installResourceUrlCompat(win = typeof window === "undefined" ? void 0 : window) {
+  if (!win || typeof win.URL !== "function") return "no-url";
+  const NativeURL = win.URL;
+  let probe;
+  try {
+    probe = new NativeURL("dsh-resource://file/__dsh_probe__/x");
+  } catch {
+    return "probe-throw";
+  }
+  if (probe.hostname === "file") return "not-needed";
+  const hostOf = (raw) => {
+    const m = /^dsh-resource:\/\/([^/?#]*)/i.exec(String(raw || ""));
+    return m && m[1] ? m[1].toLowerCase() : "";
+  };
+  function CompatURL(...args) {
+    const url = new NativeURL(...args);
+    try {
+      if (String(url.protocol) === "dsh-resource:" && !url.hostname) {
+        const proto = NativeURL.prototype;
+        const hostnameDesc = Object.getOwnPropertyDescriptor(proto, "hostname");
+        const hostDesc = Object.getOwnPropertyDescriptor(proto, "host");
+        const hostOfUrl = (u) => {
+          let native;
+          try {
+            native = hostnameDesc && hostnameDesc.get ? hostnameDesc.get.call(u) : u.hostname || "";
+          } catch {
+            native = "";
+          }
+          if (native) return native;
+          let href;
+          try {
+            href = String(u.href);
+          } catch {
+            href = "";
+          }
+          return hostOf(href);
+        };
+        if (hostOfUrl(url)) {
+          Object.defineProperty(url, "hostname", {
+            configurable: true,
+            enumerable: hostnameDesc ? hostnameDesc.enumerable : true,
+            get: () => hostOfUrl(url),
+            set: (v) => {
+              if (hostnameDesc && hostnameDesc.set) hostnameDesc.set.call(url, v);
+            }
+          });
+          if (hostDesc) {
+            Object.defineProperty(url, "host", {
+              configurable: true,
+              enumerable: hostDesc.enumerable,
+              get: () => hostOfUrl(url),
+              set: (v) => {
+                if (hostDesc.set) hostDesc.set.call(url, v);
+              }
+            });
+          }
+        }
+      }
+    } catch {
+    }
+    return url;
+  }
+  CompatURL.prototype = NativeURL.prototype;
+  for (const key of Object.getOwnPropertyNames(NativeURL)) {
+    if (key === "length" || key === "name" || key === "prototype") continue;
+    try {
+      CompatURL[key] = NativeURL[key];
+    } catch {
+    }
+  }
+  win.URL = CompatURL;
+  return "installed";
+}
+
 // client/index.js
 if (typeof window !== "undefined") {
   if (!window.crypto) {
@@ -1123,6 +1214,9 @@ if (typeof window !== "undefined") {
     };
   }
 }
+var RESOURCE_URL_COMPAT = installResourceUrlCompat();
+if (typeof window !== "undefined") window.__dshResourceUrlCompat = RESOURCE_URL_COMPAT;
+var MOBILE_MAX_WIDTH = 767;
 function isLocalEnvironment() {
   if (typeof window === "undefined") return true;
   const host = window.location.hostname || "";
@@ -3699,7 +3793,12 @@ function useDshRestart({ rpcCall, maxAttempts = 30, texts = {} } = {}) {
     setRestarting(true);
     setStatus({ phase: "restarting", text: T.restarting });
     try {
-      await rpcCall(BRIDGE_ENDPOINTS.restartDsh, {});
+      const r = await rpcCall(BRIDGE_ENDPOINTS.restartDsh, {});
+      if (r && r.ok === false) {
+        setStatus({ phase: "timeout", text: `${T.timeout}\uFF1A${r.error || "\u672A\u77E5\u539F\u56E0"}` });
+        setRestarting(false);
+        return;
+      }
     } catch {
     }
     setStatus({ phase: "reconnecting", text: T.reconnecting });
@@ -5264,7 +5363,7 @@ function setupMobileExperience(rpcCall, ctx) {
       if (document.body.classList.contains("dsh-drawer-open")) {
         document.body.classList.remove("dsh-drawer-open");
       }
-      if (typeof window !== "undefined" && window.innerWidth <= 768) {
+      if (typeof window !== "undefined" && window.innerWidth <= MOBILE_MAX_WIDTH) {
         document.body.classList.remove("dsh-workbench-open");
         const openPanels = document.querySelectorAll('div[class*="nArs4W_panel"]:not([class*="panelHidden"]), div[class*="workbench_panel"]:not([class*="panelHidden"])');
         openPanels.forEach((p) => p.classList.add("nArs4W_panelHidden"));
@@ -5273,7 +5372,7 @@ function setupMobileExperience(rpcCall, ctx) {
   }
   const ensurePanelCloseButton = () => {
     if (typeof window === "undefined") return;
-    if (window.innerWidth > 768) {
+    if (window.innerWidth > MOBILE_MAX_WIDTH) {
       document.querySelectorAll(".dsh-mobile-panel-close-btn").forEach((btn) => btn.remove());
       return;
     }
@@ -5299,14 +5398,14 @@ function setupMobileExperience(rpcCall, ctx) {
   panelObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
   window.addEventListener("resize", ensurePanelCloseButton);
   document.addEventListener("click", (e) => {
-    if (typeof window === "undefined" || window.innerWidth > 768) return;
+    if (typeof window === "undefined" || window.innerWidth > MOBILE_MAX_WIDTH) return;
     const trigger = e.target.closest('button[aria-label*="\u9762\u677F"], button[aria-label*="\u5DE5\u4F5C\u533A"], div[class*="toggleCluster"] button, button[class*="subagent"], div[class*="headerActions"] button, div[class*="titleRow"] button');
     if (trigger && !trigger.classList.contains("dsh-mobile-panel-close-btn") && !trigger.classList.contains("dsh-header-menu-btn") && !trigger.classList.contains("dsh-header-new-btn")) {
       document.body.classList.add("dsh-workbench-open");
     }
   }, true);
   document.addEventListener("click", (e) => {
-    if (typeof window === "undefined" || window.innerWidth > 768) return;
+    if (typeof window === "undefined" || window.innerWidth > MOBILE_MAX_WIDTH) return;
     const toggle = e.target.closest('button[aria-label*="\u6536\u8D77\u4FA7\u8FB9\u680F"], button[title*="\u6536\u8D77\u4FA7\u8FB9\u680F"]');
     if (toggle) {
       document.body.classList.remove("dsh-drawer-open");
@@ -6148,7 +6247,7 @@ function setupIosKeyboardAdapter() {
 }
 function setupComposerCollapse() {
   if (typeof window === "undefined" || typeof document === "undefined") return;
-  if (window.innerWidth > 768) return;
+  if (window.innerWidth > MOBILE_MAX_WIDTH) return;
   const LS_KEY = "dsh-composer-fold";
   let bar = null;
   let busy = false;

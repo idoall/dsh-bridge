@@ -20,7 +20,10 @@ export const MOBILE_STYLES_CSS = `
       --dsh-mobile-safe-bottom: env(safe-area-inset-bottom, 0px);
     }
 
-    @media (max-width: 768px) {
+    /* 断点与宿主判据对齐：宿主用 viewportWidth < 768 决定右侧栏自动全屏
+       （dsh-client-ui-sidebar-right/lib/client.js），故移动端样式取 <=767px，
+       768px 起彻底交还桌面布局，避免"桥渲染顶栏、宿主却未全屏"的错位。 */
+    @media (max-width: 767px) {
       /* 1. 主框架为 Header 腾出顶部空间 */
       div[class*="_frame"] {
         display: flex !important;
@@ -33,6 +36,19 @@ export const MOBILE_STYLES_CSS = `
         grid-template-columns: 1fr !important;
         overflow: hidden !important;
         box-sizing: border-box !important;
+      }
+
+      /* 1.1 fixed 全屏面板单独让位：position:fixed 的包含块是 viewport（CSS 2.1 §10.1），
+         不跟随上面 frame 的 padding-top，因此顶部 52px 会落进顶栏覆盖区（#41）。
+         官方右侧栏在 <768px 自动全屏（fixed; inset:0; z-index:40），这里按 data 属性
+         直接位移容器本身，不依赖宿主 CSS-module 哈希类名。
+         真正起作用的是 top；height/max-height 与下面工作台面板那段保持同一写法：
+         宿主当前用 inset:0（无显式高度）时 top 单独即可，但宿主将来若给出显式高度，
+         显式 height 仍能把盒子收在顶栏之下。 */
+      [data-sidebar-right-panel="fullscreen"] {
+        top: var(--dsh-mobile-header-h, 52px) !important;
+        height: calc(100dvh - var(--dsh-mobile-header-h, 52px)) !important;
+        max-height: calc(100dvh - var(--dsh-mobile-header-h, 52px)) !important;
       }
 
       /* 2. 顶部原生导航条：100% 还原 DeepSeek App (左侧双横线，右侧(+)，中间留白，无多余设置按钮) */
@@ -892,7 +908,7 @@ export const MOBILE_STYLES_CSS = `
       --dsw-alias-label-primary-foreground: #0f1115;
     }
 
-    @media (min-width: 769px) {
+    @media (min-width: 768px) {
       .dsh-mobile-app-header,
       .dsh-mobile-backdrop,
       .dsh-mobile-panel-close-btn {

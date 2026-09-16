@@ -10,7 +10,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import vm from 'node:vm'
-import { installAbortSignalCompat, BROWSER_ABORT_SIGNAL_POLYFILL } from '../lib/compat.js'
+import { installAbortSignalCompat, BROWSER_ABORT_SIGNAL_POLYFILL, BROWSER_PROMISE_ITERATOR_POLYFILL } from '../lib/compat.js'
 
 /** 构造一个没有 any/timeout 的最小 AbortSignal/AbortController 环境 */
 function makeLegacyEnvironment() {
@@ -170,11 +170,87 @@ test('代理注入的 HTML 包含 AbortSignal 垫片（端到端）', async () =
     const html = await res.text()
     assert.ok(html.includes('data-dsh-bridge-polyfill="2"'), '必须注入 AbortSignal 垫片脚本')
     assert.ok(html.includes('S.any ='), '垫片必须补齐 any')
+    assert.ok(html.includes('data-dsh-bridge-polyfill="3"'), '必须注入 iOS 16 的 Promise/Iterator 垫片')
+    assert.ok(html.includes('Promise.withResolvers ='), '垫片必须补齐 Promise.withResolvers')
+    assert.ok(html.includes('self.Iterator = IteratorShim'), '垫片必须补齐 Iterator')
     // 垫片脚本必须位于 <head> 内、宿主页面内容之前，才能在宿主脚本执行前生效
     assert.ok(html.indexOf('data-dsh-bridge-polyfill="2"') < html.indexOf('<title>probe</title>'), '垫片须在宿主内容之前')
+    assert.ok(html.indexOf('data-dsh-bridge-polyfill="3"') < html.indexOf('<title>probe</title>'), 'iOS 16 垫片须在宿主内容之前')
     assert.ok(html.includes('<title>probe</title>'), '原页面内容保留')
   } finally {
     await proxy.stop()
     await new Promise((r) => upstream.close(r))
   }
+})
+
+// ---------------------------------------------------------------------------
+// 浏览器注入垫片（二）：iOS 16 / 旧 Safari 无 Promise.withResolvers、无 Iterator 全局
+// ---------------------------------------------------------------------------
+
+function polyfillBody(source) {
+  return source.replace(/<script[^>]*>/, '').replace('</script>', '')
+}
+
+/** 在 vm 沙箱里跑 iOS 16 垫片：删掉 withResolvers 与 Iterator，模拟 iOS 16 Safari */
+function runIos16PolyfillInSandbox({ withIterator = false } = {}) {
+  const sandbox = { self: null }
+  sandbox.self = sandbox
+  vm.createContext(sandbox)
+  // 沙箱是新 realm：先摘掉 withResolvers，Iterator 本来就不存在（除非显式造一个）
+  vm.runInContext('if (typeof Promise.withResolvers === "function") delete Promise.withResolvers;', sandbox)
+  if (withIterator) {
+    vm.runInContext('self.Iterator = function Iterator() {}; self.Iterator.__sentinel = 1;', sandbox)
+  }
+  const body = polyfillBody(BROWSER_PROMISE_ITERATOR_POLYFILL)
+  new Function(body) // 语法编译校验（浏览器里语法错误会导致整个脚本失效）
+  vm.runInContext(body, sandbox)
+  return sandbox
+}
+
+test('iOS 16 垫片：补齐 Promise.withResolvers 且语义正确', async () => {
+  const sandbox = runIos16PolyfillInSandbox()
+  const installed = vm.runInContext('typeof Promise.withResolvers', sandbox)
+  assert.equal(installed, 'function', '必须安装 Promise.withResolvers')
+
+  const resolved = vm.runInContext(`(function () {
+    var d = Promise.withResolvers();
+    var seen = null;
+    d.promise.then(function (v) { seen = v; });
+    d.resolve(42);
+    return { thenable: typeof d.promise.then === 'function', hasReject: typeof d.reject === 'function' };
+  })()`, sandbox)
+  assert.equal(resolved.thenable, true)
+  assert.equal(resolved.hasReject, true)
+  await new Promise((r) => setTimeout(r, 10))
+  assert.equal(await vm.runInContext(`(function () {
+    var d = Promise.withResolvers();
+    d.resolve('ok');
+    return d.promise;
+  })()`, sandbox), 'ok', 'resolve 必须能真正兑现 promise')
+})
+
+test('iOS 16 垫片：Iterator.prototype 必须指向真实的内置迭代器共享原型', () => {
+  const sandbox = runIos16PolyfillInSandbox()
+  assert.equal(vm.runInContext('typeof self.Iterator', sandbox), 'function', '必须安装 Iterator')
+
+  // pdf.js 在模块顶层就写 Iterator.prototype.join = ...（它以为 Iterator 存在）。
+  // 只有当 Iterator.prototype 是真实 %IteratorPrototype% 时，这个补丁才对内置迭代器生效。
+  const joined = vm.runInContext(`(function () {
+    if (typeof Iterator.prototype.join !== 'function') {
+      Iterator.prototype.join = function (sep) { return Array.prototype.join.call(Array.from(this), sep); };
+    }
+    return [1, 2, 3].values().join('-');
+  })()`, sandbox)
+  assert.equal(joined, '1-2-3', '补丁必须落到真实迭代器原型（否则 pdf.js 的 join 兜底形同虚设）')
+})
+
+test('iOS 16 垫片：引擎已具备时不改动既有实现', () => {
+  const sandbox = runIos16PolyfillInSandbox({ withIterator: true })
+  assert.equal(vm.runInContext('self.Iterator.__sentinel', sandbox), 1, '已有 Iterator 时不得覆盖')
+  const withResolversKept = vm.runInContext(`(function () {
+    var native = function () { return 'native'; };
+    Promise.withResolvers = native;
+    return Promise.withResolvers === native;
+  })()`, sandbox)
+  assert.equal(withResolversKept, true, '已有 withResolvers 时不得覆盖')
 })

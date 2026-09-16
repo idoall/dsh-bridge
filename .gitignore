@@ -51,6 +51,9 @@ bin/cloudflared*
 *.tmp
 .cache/
 
+# Scratch / 复现与验收产物（含 Chrome for Testing 缓存，体积可达数百 MB）
+scratch/
+
 # Debug
 debug.log
 

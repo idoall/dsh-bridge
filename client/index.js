@@ -29,6 +29,17 @@ if (typeof window !== 'undefined') {
 
 import { BRIDGE_RPC_CHANNEL, BRIDGE_ENDPOINTS } from '../lib/bridge-rpc-constants.js';
 
+import { installResourceUrlCompat } from './resource-url-compat.js';
+
+const RESOURCE_URL_COMPAT = installResourceUrlCompat();
+if (typeof window !== 'undefined') window.__dshResourceUrlCompat = RESOURCE_URL_COMPAT;
+
+// 移动端断点上限：宿主用 viewportWidth < 768 判定右侧栏自动全屏
+// （@deepseek-ai/dsh-client-ui-sidebar-right 的 autoFullscreen），
+// 故桥的移动端分支一律取「<= 767」，与 mobile-styles.js 的 @media (max-width: 767px) 对齐，
+// 避免 768px 单点上"桥渲染顶栏、宿主却按桌面（push）布局"的错位。
+const MOBILE_MAX_WIDTH = 767;
+
 function isLocalEnvironment() {
   if (typeof window === 'undefined') return true;
   const host = window.location.hostname || '';
@@ -2327,9 +2338,16 @@ function useDshRestart({ rpcCall, maxAttempts = 30, texts = {} } = {}) {
     setRestarting(true);
     setStatus({ phase: 'restarting', text: T.restarting });
     try {
-      await rpcCall(BRIDGE_ENDPOINTS.restartDsh, {});
+      const r = await rpcCall(BRIDGE_ENDPOINTS.restartDsh, {});
+      // 宿主已明确告知"没能安排重启"（例如 systemd 调用失败、助手都派生不出来）：
+      // 这时绝不能再假装"正在重连"——直接报错并停下，否则用户只会看到永远转圈。
+      if (r && r.ok === false) {
+        setStatus({ phase: 'timeout', text: `${T.timeout}：${r.error || '未知原因'}` });
+        setRestarting(false);
+        return;
+      }
     } catch {
-      // 服务可能瞬间关闭导致连接断开，忽略
+      // 服务可能瞬间关闭导致连接断开，忽略；下面的轮询会判断是否真的起来了
     }
 
     setStatus({ phase: 'reconnecting', text: T.reconnecting });
@@ -3825,7 +3843,7 @@ function setupMobileExperience(rpcCall, ctx) {
         document.body.classList.remove('dsh-drawer-open');
       }
       // 仅在移动端切换会话时自动收起右侧面板回到对话（PC端绝不干扰）
-      if (typeof window !== 'undefined' && window.innerWidth <= 768) {
+      if (typeof window !== 'undefined' && window.innerWidth <= MOBILE_MAX_WIDTH) {
         document.body.classList.remove('dsh-workbench-open');
         const openPanels = document.querySelectorAll('div[class*="nArs4W_panel"]:not([class*="panelHidden"]), div[class*="workbench_panel"]:not([class*="panelHidden"])');
         openPanels.forEach((p) => p.classList.add('nArs4W_panelHidden'));
@@ -3833,10 +3851,10 @@ function setupMobileExperience(rpcCall, ctx) {
     });
   }
 
-  // 1.1 移动端右侧边栏 / Workbench 面板管理：仅在移动端（<= 768px）挂载“返回对话”收起按钮，PC端保持纯净
+  // 1.1 移动端右侧边栏 / Workbench 面板管理：仅在移动端（<= 767px）挂载“返回对话”收起按钮，PC端保持纯净
   const ensurePanelCloseButton = () => {
     if (typeof window === 'undefined') return;
-    if (window.innerWidth > 768) {
+    if (window.innerWidth > MOBILE_MAX_WIDTH) {
       document.querySelectorAll('.dsh-mobile-panel-close-btn').forEach(btn => btn.remove());
       return;
     }
@@ -3865,7 +3883,7 @@ function setupMobileExperience(rpcCall, ctx) {
 
   // 移动端点击面板/工作区触发按钮时，自动激活 dsh-workbench-open
   document.addEventListener('click', (e) => {
-    if (typeof window === 'undefined' || window.innerWidth > 768) return;
+    if (typeof window === 'undefined' || window.innerWidth > MOBILE_MAX_WIDTH) return;
     const trigger = e.target.closest('button[aria-label*="面板"], button[aria-label*="工作区"], div[class*="toggleCluster"] button, button[class*="subagent"], div[class*="headerActions"] button, div[class*="titleRow"] button');
     if (trigger && !trigger.classList.contains('dsh-mobile-panel-close-btn') && !trigger.classList.contains('dsh-header-menu-btn') && !trigger.classList.contains('dsh-header-new-btn')) {
       document.body.classList.add('dsh-workbench-open');
@@ -3874,7 +3892,7 @@ function setupMobileExperience(rpcCall, ctx) {
 
   // 移动端点击 DSH 自带的收起侧边栏图标时，自动收起抽屉
   document.addEventListener('click', (e) => {
-    if (typeof window === 'undefined' || window.innerWidth > 768) return;
+    if (typeof window === 'undefined' || window.innerWidth > MOBILE_MAX_WIDTH) return;
     const toggle = e.target.closest('button[aria-label*="收起侧边栏"], button[title*="收起侧边栏"]');
     if (toggle) {
       document.body.classList.remove('dsh-drawer-open');
@@ -4884,7 +4902,7 @@ function setupIosKeyboardAdapter() {
 // 折叠态记忆到 localStorage（dsh-composer-fold），跨会话保持用户偏好。
 function setupComposerCollapse() {
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
-  if (window.innerWidth > 768) return; // 仅移动端
+  if (window.innerWidth > MOBILE_MAX_WIDTH) return; // 仅移动端
   const LS_KEY = 'dsh-composer-fold';
 
   let bar = null;          // 折叠态底部"点击输入"细条
